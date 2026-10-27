@@ -28,49 +28,52 @@
   button.primary { flex:1; background:var(--accent); color:#001018; border-color:var(--accent); font-weight:700; }
   button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .help { color:var(--dim); font-size:13px; line-height:1.7; margin-top:28px; }
-  #stage { position:fixed; inset:0; background:#000; display:none; touch-action:none; }
+  #stage { position:fixed; inset:0; background:#000; display:none; touch-action:none;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
   #cv { position:absolute; inset:0; width:100%; height:100%; }
   #status { position:absolute; left:0; right:0; bottom:calc(env(safe-area-inset-bottom) + 12px);
     text-align:center; font-size:13px; color:#555; pointer-events:none; padding:0 16px; }
-  #close { position:absolute; top:calc(env(safe-area-inset-top) + 8px); left:8px; padding:6px 12px;
-    font-size:14px; background:transparent; color:#444; border-color:#222; }
+  #menu { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:14px; background:rgba(0,0,0,.88); }
+  #menu[hidden] { display:none; }
+  #menu p { margin:0 0 8px; font-size:20px; color:var(--fg); }
+  #menu button { flex:none; width:min(260px, 70vw); }
 </style>
 </head>
 <body>
 
 <main id="setup">
   <h1>DarkMoji</h1>
-  <p class="sub">スマホを振って、暗闇に文字を浮かべる</p>
+  <p class="sub" data-i18n="sub"></p>
 
-  <label for="text">表示する文字（20文字まで）</label>
-  <input id="text" type="text" maxlength="20" value="こんばんは" autocomplete="off">
-  <canvas id="preview" aria-label="ドット表示のプレビュー"></canvas>
+  <label for="text" data-i18n="labelText"></label>
+  <input id="text" type="text" maxlength="20" autocomplete="off">
+  <canvas id="preview" data-i18n-aria="previewAlt"></canvas>
 
-  <label for="colw"><span class="row"><span>光らせる幅（px）</span><span id="colwVal">24</span></span></label>
+  <label for="colw"><span class="row"><span data-i18n="labelColw"></span><span id="colwVal">24</span></span></label>
   <input id="colw" type="range" min="4" max="120" value="24">
 
-  <label for="hpct"><span class="row"><span>全体の高さ（画面の%）</span><span id="hpctVal">100</span></span></label>
+  <label for="hpct"><span class="row"><span data-i18n="labelHpct"></span><span id="hpctVal">100</span></span></label>
   <input id="hpct" type="range" min="20" max="100" value="100">
 
-  <label class="check"><input id="flip" type="checkbox"> 左右を反転する（文字が逆に見えるとき）</label>
+  <label class="check"><input id="flip" type="checkbox"> <span data-i18n="flip"></span></label>
 
   <div class="btns">
-    <button id="start" class="primary">スタート</button>
-    <button id="demo">PCデモ</button>
+    <button id="start" class="primary" data-i18n="start"></button>
+    <button id="demo" data-i18n="demo"></button>
   </div>
 
-  <p class="help">
-    画面を縦向きに持ち、横方向に何度も振ってください。<br>
-    1往復目は周期と加速度の計測、2振り目以降で表示します。行きも帰りも表示し、帰りは列を逆順に光らせます。<br>
-    光らせる幅を広げると明るくなりますが、文字はにじみます。<br>
-    センサーはHTTPSのページでのみ動きます。
-  </p>
+  <p class="help" data-i18n-html="help"></p>
 </main>
 
 <div id="stage">
   <canvas id="cv"></canvas>
-  <button id="close" aria-label="終了">✕</button>
   <div id="status"></div>
+  <div id="menu" hidden>
+    <p id="menuTitle" data-i18n="paused"></p>
+    <button id="resume" class="primary" data-i18n="resume"></button>
+    <button id="toText" data-i18n="toText"></button>
+  </div>
 </div>
 
 <script>
@@ -83,6 +86,46 @@ const MIN_THR = 2.0;             // m/s² これ未満は振りとみなさな�
 const $ = id => document.getElementById(id);
 const setup = $("setup"), stage = $("stage"), cv = $("cv"), ctx = cv.getContext("2d");
 const textEl = $("text"), colwEl = $("colw"), hpctEl = $("hpct"), flipEl = $("flip"), statusEl = $("status");
+
+// ---------- 表示言語（日本語以外は英語） ----------
+const LANG = (navigator.language || "en").toLowerCase().startsWith("ja") ? "ja" : "en";
+const T = {
+  ja: {
+    sub: "スマホを振って、暗闇に文字を浮かべる",
+    labelText: "表示する文字（20文字まで）", previewAlt: "ドット表示のプレビュー",
+    labelColw: "光らせる幅（px）", labelHpct: "全体の高さ（画面の%）",
+    flip: "左右を反転する（文字が逆に見えるとき）",
+    start: "スタート", demo: "PCデモ",
+    help: "画面を縦向きに持ち、横方向に何度も振ってください。画面を長押し（約1秒）すると、この画面に戻ります。<br>" +
+          "1往復目は周期と加速度の計測、2振り目以降で表示します。行きも帰りも表示し、帰りは列を逆順に光らせます。<br>" +
+          "光らせる幅を広げると明るくなりますが、文字はにじみます。<br>センサーはHTTPSのページでのみ動きます。",
+    defaultText: "こんばんは",
+    measure: "振ってください（1往復で計測／長押しで戻る）", measuring: n => `計測中… ${n}/3`,
+    paused: "停止中", resume: "再開", toText: "文字入力",
+    noSensor: "センサーの値が来ません。HTTPSで開いているか確認してください（PCは「PCデモ」）",
+    permDenied: "モーションセンサーの許可が必要です", sensorErr: m => "センサーを開始できません: " + m,
+  },
+  en: {
+    sub: "Shake your phone to write words in the dark",
+    labelText: "Text to display (up to 20 characters)", previewAlt: "Dot preview",
+    labelColw: "Lit width (px)", labelHpct: "Overall height (% of screen)",
+    flip: "Mirror left/right (if the text looks reversed)",
+    start: "Start", demo: "PC demo",
+    help: "Hold the phone upright and shake it sideways, back and forth. Long-press the screen (about 1 s) to return here.<br>" +
+          "The first round trip measures the period and acceleration; the text appears from the second swing on. It shows on both the outward and return strokes, lighting the columns in reverse on the return.<br>" +
+          "A wider lit width is brighter but blurs the text.<br>Motion sensors only work on HTTPS pages.",
+    defaultText: "Hello",
+    measure: "Shake the phone (one round trip to calibrate / long-press to go back)", measuring: n => `Measuring… ${n}/3`,
+    paused: "Paused", resume: "Resume", toText: "Edit text",
+    noSensor: "No sensor data. Check that the page is opened over HTTPS (use \"PC demo\" on a computer).",
+    permDenied: "Motion sensor permission is required", sensorErr: m => "Cannot start the sensor: " + m,
+  },
+}[LANG];
+document.documentElement.lang = LANG;
+document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = T[el.dataset.i18n]; });
+document.querySelectorAll("[data-i18n-html]").forEach(el => { el.innerHTML = T[el.dataset.i18nHtml]; });
+document.querySelectorAll("[data-i18n-aria]").forEach(el => { el.setAttribute("aria-label", T[el.dataset.i18nAria]); });
+textEl.value = T.defaultText;
 
 // ---------- 文字 → ドットビットマップ ----------
 let bits = [], N = 0;            // bits[col][row]
@@ -138,11 +181,20 @@ let peaks = [], model = null, lastPeakT = 0, calibratedAt = 0;
 
 function resetMeasure() {
   state = "measure"; peaks = []; model = null; lobe.sign = 0; lastFired = 0; env = 0;
-  statusEl.textContent = "振ってください（1往復で計測します）";
+  statusEl.textContent = T.measure;
+}
+
+function pause() {
+  state = "paused"; statusEl.textContent = ""; $("menu").hidden = false;
+}
+
+function resume() {
+  $("menu").hidden = true; lastT = 0; af = 0;
+  resetMeasure();
 }
 
 function onAccel(t, a) {
-  if (state === "idle") return;
+  if (state === "idle" || state === "paused") return;
   const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0.016;
   lastT = t;
   af += 0.5 * (a - af);
@@ -167,7 +219,7 @@ function firePeak(t, sign, amp) {
     const prev = peaks[peaks.length - 1];
     if (prev && (prev.sign === sign || t - prev.t < 80)) peaks = [];
     peaks.push({ t, sign, amp });
-    statusEl.textContent = `計測中… ${Math.min(peaks.length, 3)}/3`;
+    statusEl.textContent = T.measuring(Math.min(peaks.length, 3));
     if (peaks.length === 3) {
       const Th = (peaks[2].t - peaks[0].t) / 2;
       if (Th < 80 || Th > 1500) { peaks.shift(); return; }
@@ -228,7 +280,7 @@ function fit() {
 function draw(now) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, innerWidth, innerHeight);
   if (state !== "run") return;
-  if (now - lastPeakT > model.Th * 3.2) { resetMeasure(); return; }   // 振るのをやめたら再計測
+  if (now - lastPeakT > model.Th * 3.2) { pause(); return; }   // 振るのをやめたらメニューを出す
   if (now - calibratedAt > 4000 && statusEl.textContent) statusEl.textContent = "";
 
   const x = (now - model.tRef) / model.Th;
@@ -257,9 +309,9 @@ async function begin(demo) {
     if (!demo && typeof DeviceMotionEvent !== "undefined" &&
         typeof DeviceMotionEvent.requestPermission === "function") {
       const r = await DeviceMotionEvent.requestPermission();
-      if (r !== "granted") { alert("モーションセンサーの許可が必要です"); return; }
+      if (r !== "granted") { alert(T.permDenied); return; }
     }
-  } catch (err) { alert("センサーを開始できません: " + err.message); return; }
+  } catch (err) { alert(T.sensorErr(err.message)); return; }
 
   await refreshPreview();
   setup.style.display = "none"; stage.style.display = "block";
@@ -270,12 +322,12 @@ async function begin(demo) {
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
   if (!demo) setTimeout(() => {
     if (state !== "idle" && !gotMotion)
-      statusEl.textContent = "センサーの値が来ません。HTTPSで開いているか確認してください（PCは「PCデモ」）";
+      statusEl.textContent = T.noSensor;
   }, 1500);
 }
 
 function end() {
-  state = "idle"; cancelAnimationFrame(raf);
+  state = "idle"; $("menu").hidden = true; cancelAnimationFrame(raf);
   window.removeEventListener("devicemotion", onMotion);
   clearInterval(simTimer); simTimer = null;
   try { wakeLock?.release(); } catch (_) {}
@@ -284,7 +336,14 @@ function end() {
 
 $("start").addEventListener("click", () => begin(false));
 $("demo").addEventListener("click", () => begin(true));
-$("close").addEventListener("click", end);
+$("resume").addEventListener("click", resume);
+$("toText").addEventListener("click", end);
+// 長押し（0.8秒）で文字入力に戻る
+let holdTimer = 0;
+const cancelHold = () => { clearTimeout(holdTimer); holdTimer = 0; };
+stage.addEventListener("pointerdown", () => { cancelHold(); holdTimer = setTimeout(() => { holdTimer = 0; end(); }, 800); });
+["pointerup", "pointercancel", "pointerleave"].forEach(ev => stage.addEventListener(ev, cancelHold));
+stage.addEventListener("contextmenu", e => e.preventDefault());
 window.addEventListener("resize", () => { if (state !== "idle") fit(); });
 
 // 動作確認用
