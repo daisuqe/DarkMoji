@@ -17,6 +17,9 @@
   input[type=text] { width:100%; font:inherit; font-size:22px; padding:12px; color:var(--fg);
     background:#0b0b0b; border:1px solid var(--line); border-radius:8px; }
   input[type=text]:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  select, input[type=number] { width:100%; font:inherit; font-size:18px; padding:12px; color:var(--fg);
+    background:#0b0b0b; border:1px solid var(--line); border-radius:8px; }
+  #periodRow[hidden] { display:none; }
   input[type=range] { width:100%; accent-color:var(--accent); }
   .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
   .check { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--fg); margin:16px 0 0; }
@@ -56,6 +59,16 @@
   <label for="hpct"><span class="row"><span data-i18n="labelHpct"></span><span id="hpctVal">100</span></span></label>
   <input id="hpct" type="range" min="20" max="100" value="100">
 
+  <label for="mode" data-i18n="labelMode"></label>
+  <select id="mode">
+    <option value="accel" data-i18n="modeAccel"></option>
+    <option value="fixed" data-i18n="modeFixed"></option>
+  </select>
+  <div id="periodRow" hidden>
+    <label for="period" data-i18n="labelPeriod"></label>
+    <input id="period" type="number" min="0.3" max="10" step="0.1" value="1.5" inputmode="decimal">
+  </div>
+
   <label class="check"><input id="flip" type="checkbox"> <span data-i18n="flip"></span></label>
 
   <div class="btns">
@@ -81,6 +94,7 @@
 const ROWS = 8;                  // 美咲フォントは 8x8
 const U0 = 0.2, U1 = 0.8;        // 1ストロークのうち表示に使う区間（中央部は速度が一定に近い）
 const P0 = (1 - Math.cos(Math.PI * U0)) / 2, P1 = (1 - Math.cos(Math.PI * U1)) / 2;
+const IDLE_MS = 3000;            // 検出できる振りがこれだけ途切れたら停止中にする
 const MIN_THR = 2.0;             // m/s² これ未満は振りとみなさない
 
 const $ = id => document.getElementById(id);
@@ -95,10 +109,15 @@ const T = {
     labelText: "表示する文字（20文字まで）", previewAlt: "ドット表示のプレビュー",
     labelColw: "光らせる幅（px）", labelHpct: "全体の高さ（画面の%）",
     flip: "左右を反転する（文字が逆に見えるとき）",
+    labelMode: "動作モード", modeAccel: "加速度で自動（往復を計測）", modeFixed: "周期を指定（行きだけ表示）",
+    labelPeriod: "往復の周期（秒）",
+    fixedHint: p => `周期 ${p} 秒（往復）。行きだけ表示します。短くタップで行きの開始に合わせます`,
     start: "スタート", demo: "PCデモ",
     help: "画面を縦向きに持ち、横方向に何度も振ってください。画面を長押し（約1秒）すると、この画面に戻ります。<br>" +
           "1往復目は周期と加速度の計測、2振り目以降で表示します。行きも帰りも表示し、帰りは列を逆順に光らせます。<br>" +
-          "光らせる幅を広げると明るくなりますが、文字はにじみます。<br>センサーはHTTPSのページでのみ動きます。",
+          "光らせる幅を広げると明るくなりますが、文字はにじみます。<br>" +
+          "「周期を指定」では加速度を使わず、決めた周期（例: 1.5秒で1往復）で行きだけ表示します。振りに合わなければ短くタップして位相を合わせます。<br>" +
+          "センサーはHTTPSのページでのみ動きます（周期指定を除く）。",
     defaultText: "こんばんは",
     measure: "振ってください（1往復で計測／長押しで戻る）", measuring: n => `計測中… ${n}/3`,
     paused: "停止中", resume: "再開", toText: "文字入力",
@@ -110,10 +129,15 @@ const T = {
     labelText: "Text to display (up to 20 characters)", previewAlt: "Dot preview",
     labelColw: "Lit width (px)", labelHpct: "Overall height (% of screen)",
     flip: "Mirror left/right (if the text looks reversed)",
+    labelMode: "Mode", modeAccel: "Auto (measure acceleration)", modeFixed: "Fixed period (outward stroke only)",
+    labelPeriod: "Round-trip period (s)",
+    fixedHint: p => `Period ${p} s per round trip. Only the outward stroke is shown. Tap briefly to sync the start of a stroke.`,
     start: "Start", demo: "PC demo",
     help: "Hold the phone upright and shake it sideways, back and forth. Long-press the screen (about 1 s) to return here.<br>" +
           "The first round trip measures the period and acceleration; the text appears from the second swing on. It shows on both the outward and return strokes, lighting the columns in reverse on the return.<br>" +
-          "A wider lit width is brighter but blurs the text.<br>Motion sensors only work on HTTPS pages.",
+          "A wider lit width is brighter but blurs the text.<br>" +
+          "\"Fixed period\" does not use the sensors: it shows the text on the outward stroke only, at the period you set (e.g. 1.5 s per round trip). Tap briefly to sync the phase to your swing.<br>" +
+          "Motion sensors only work on HTTPS pages (not needed for fixed period).",
     defaultText: "Hello",
     measure: "Shake the phone (one round trip to calibrate / long-press to go back)", measuring: n => `Measuring… ${n}/3`,
     paused: "Paused", resume: "Resume", toText: "Edit text",
@@ -269,7 +293,7 @@ function startSim() {
 }
 
 // ---------- 描画 ----------
-let raf = 0, wakeLock = null;
+let raf = 0, wakeLock = null, fix = null;
 
 function fit() {
   const dpr = window.devicePixelRatio || 1;
@@ -277,23 +301,16 @@ function fit() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-function draw(now) {
-  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, innerWidth, innerHeight);
-  if (state !== "run") return;
-  if (now - lastPeakT > model.Th * 3.2) { pause(); return; }   // 振るのをやめたらメニューを出す
-  if (now - calibratedAt > 4000 && statusEl.textContent) statusEl.textContent = "";
-
-  const x = (now - model.tRef) / model.Th;
-  const n = Math.floor(x), u = x - n;
-  if (u < U0 || u > U1) return;
-
-  let dir = model.dirRef * (((n % 2) + 2) % 2 === 0 ? 1 : -1);
-  if (flipEl.checked) dir = -dir;
+// u: 1ストローク内の進み(0..1)。表示区間外は -1、それ以外は左端から数えた列番号
+function columnAt(u, dir) {
+  if (u < U0 || u > U1) return -1;
   const p = (1 - Math.cos(Math.PI * u)) / 2;
   let c = Math.floor((p - P0) / (P1 - P0) * N);
   c = Math.max(0, Math.min(N - 1, c));
-  if (dir < 0) c = N - 1 - c;                                        // 帰りは逆順
+  return dir < 0 ? N - 1 - c : c;                                    // 帰りは逆順
+}
 
+function lightColumn(c) {
   const rowH = innerHeight * hpctEl.value / 100 / ROWS, colW = +colwEl.value, y0 = (innerHeight - rowH * ROWS) / 2;
   ctx.fillStyle = "#fff";
   const col = bits[c], x0 = innerWidth / 2 - colW / 2;
@@ -301,12 +318,35 @@ function draw(now) {
     if (col[r]) ctx.fillRect(x0, y0 + r * rowH, colW, rowH - 2);
 }
 
+function draw(now) {
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  if (state === "fixed") {                                           // 周期指定：行き（前半）だけ表示
+    if (now - calibratedAt > 5000 && statusEl.textContent) statusEl.textContent = "";
+    const x = (((now - fix.tRef) / fix.P) % 1 + 1) % 1;
+    if (x >= 0.5) return;
+    const c = columnAt(x * 2, flipEl.checked ? -1 : 1);
+    if (c >= 0) lightColumn(c);
+    return;
+  }
+  if (state !== "run") return;
+  if (now - lastPeakT > IDLE_MS) { pause(); return; }               // 弱い・周期的でない状態が続いたらメニューを出す
+  if (now - calibratedAt > 4000 && statusEl.textContent) statusEl.textContent = "";
+
+  const x = (now - model.tRef) / model.Th, n = Math.floor(x);
+  let dir = model.dirRef * (((n % 2) + 2) % 2 === 0 ? 1 : -1);
+  if (flipEl.checked) dir = -dir;
+  const c = columnAt(x - n, dir);
+  if (c >= 0) lightColumn(c);
+}
+
 function loop(now) { draw(now); raf = requestAnimationFrame(loop); }
 
 // ---------- 画面遷移 ----------
 async function begin(demo) {
+  const fixed = $("mode").value === "fixed";
+  if (fixed) demo = false;
   try {
-    if (!demo && typeof DeviceMotionEvent !== "undefined" &&
+    if (!fixed && !demo && typeof DeviceMotionEvent !== "undefined" &&
         typeof DeviceMotionEvent.requestPermission === "function") {
       const r = await DeviceMotionEvent.requestPermission();
       if (r !== "granted") { alert(T.permDenied); return; }
@@ -316,6 +356,14 @@ async function begin(demo) {
   await refreshPreview();
   setup.style.display = "none"; stage.style.display = "block";
   fit(); gotMotion = false; gx = null; lastT = 0; af = 0;
+  if (fixed) {
+    const P = Math.min(10, Math.max(0.3, parseFloat($("period").value) || 1.5));
+    fix = { tRef: performance.now(), P: P * 1000 };
+    state = "fixed"; calibratedAt = performance.now(); statusEl.textContent = T.fixedHint(P);
+    raf = requestAnimationFrame(loop);
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+    return;
+  }
   resetMeasure();
   if (demo) startSim(); else window.addEventListener("devicemotion", onMotion);
   raf = requestAnimationFrame(loop);
@@ -341,8 +389,13 @@ $("toText").addEventListener("click", end);
 // 長押し（0.8秒）で文字入力に戻る
 let holdTimer = 0;
 const cancelHold = () => { clearTimeout(holdTimer); holdTimer = 0; };
-stage.addEventListener("pointerdown", () => { cancelHold(); holdTimer = setTimeout(() => { holdTimer = 0; end(); }, 800); });
+let downAt = 0;
+stage.addEventListener("pointerdown", () => { downAt = performance.now(); cancelHold(); holdTimer = setTimeout(() => { holdTimer = 0; end(); }, 800); });
 ["pointerup", "pointercancel", "pointerleave"].forEach(ev => stage.addEventListener(ev, cancelHold));
+stage.addEventListener("pointerup", e => {                          // 周期指定：短いタップで行きの開始に位相を合わせる
+  if (state === "fixed" && e.target === cv && performance.now() - downAt < 300) fix.tRef = performance.now();
+});
+$("mode").addEventListener("change", () => { $("periodRow").hidden = $("mode").value !== "fixed"; });
 stage.addEventListener("contextmenu", e => e.preventDefault());
 window.addEventListener("resize", () => { if (state !== "idle") fit(); });
 
