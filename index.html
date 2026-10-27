@@ -178,17 +178,15 @@ function firePeak(t, sign, amp) {
     return;
   }
   if (state !== "run") return;
-  const k = Math.round((t - model.tRef) / model.Th);
-  const expect = model.dirRef * (k % 2 === 0 ? 1 : -1);
-  if (k < 0 || sign !== expect) {                    // 位相がずれたら合わせ直す
-    model.tRef = t; model.dirRef = sign;
-  } else {
-    const err = t - (model.tRef + k * model.Th);
-    model.tRef += k * model.Th + 0.7 * err;
-    model.dirRef = expect;
-    if (k === 1) model.Th = 0.7 * model.Th + 0.3 * (t - model.prevT);
+  // 折り返しを検出するたびに、直近の半周期と加速度を重く取り入れて更新する
+  const W = 0.6;
+  const k = Math.round((t - model.prevT) / model.Th);
+  if (k >= 1) {
+    const th = (t - model.prevT) / k;
+    if (th > model.Th * 0.5 && th < model.Th * 2) model.Th = (1 - W) * model.Th + W * th;
   }
-  model.amp = 0.8 * model.amp + 0.2 * amp;
+  model.amp = (1 - W) * model.amp + W * amp;
+  model.tRef = t; model.dirRef = sign;               // 位相は最新の折り返しに合わせる
   model.prevT = t; lastPeakT = t;
 }
 
