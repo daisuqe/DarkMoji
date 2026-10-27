@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>DarkMoji</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#000; --fg:#e8e8e8; --dim:#8a8a8a; --accent:#5cf; --line:#262626; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family: system-ui, "Hiragino Sans", "Yu Gothic", sans-serif; -webkit-tap-highlight-color: transparent; }
+  #setup { max-width:480px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:28px; letter-spacing:.08em; margin:8px 0 4px; }
+  .sub { color:var(--dim); font-size:14px; margin:0 0 24px; }
+  label { display:block; font-size:13px; color:var(--dim); margin:18px 0 6px; }
+  input[type=text] { width:100%; font:inherit; font-size:22px; padding:12px; color:var(--fg);
+    background:#0b0b0b; border:1px solid var(--line); border-radius:8px; }
+  input[type=text]:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .check { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--fg); margin:16px 0 0; }
+  #preview { display:block; width:100%; height:auto; margin-top:12px; background:#050505;
+    border:1px solid var(--line); border-radius:8px; image-rendering:pixelated; }
+  .btns { display:flex; gap:10px; margin-top:24px; }
+  button { font:inherit; font-size:16px; padding:14px 16px; border-radius:10px; border:1px solid var(--line);
+    background:#111; color:var(--fg); cursor:pointer; }
+  button.primary { flex:1; background:var(--accent); color:#001018; border-color:var(--accent); font-weight:700; }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .help { color:var(--dim); font-size:13px; line-height:1.7; margin-top:28px; }
+  #stage { position:fixed; inset:0; background:#000; display:none; touch-action:none; }
+  #cv { position:absolute; inset:0; width:100%; height:100%; }
+  #status { position:absolute; left:0; right:0; bottom:calc(env(safe-area-inset-bottom) + 12px);
+    text-align:center; font-size:13px; color:#555; pointer-events:none; padding:0 16px; }
+  #close { position:absolute; top:calc(env(safe-area-inset-top) + 8px); left:8px; padding:6px 12px;
+    font-size:14px; background:transparent; color:#444; border-color:#222; }
+</style>
+</head>
+<body>
+
+<main id="setup">
+  <h1>DarkMoji</h1>
+  <p class="sub">スマホを振って、暗闇に文字を浮かべる</p>
+
+  <label for="text">表示する文字（8文字まで）</label>
+  <input id="text" type="text" maxlength="8" value="ダークモジ" autocomplete="off">
+  <canvas id="preview" aria-label="ドット表示のプレビュー"></canvas>
+
+  <label for="slit"><span class="row"><span>スリット幅（列数）</span><span id="slitVal">1</span></span></label>
+  <input id="slit" type="range" min="1" max="24" value="1">
+
+  <label class="check"><input id="flip" type="checkbox"> 左右を反転する（文字が逆に見えるとき）</label>
+
+  <div class="btns">
+    <button id="start" class="primary">スタート</button>
+    <button id="demo">PCデモ</button>
+  </div>
+
+  <p class="help">
+    画面を縦向きに持ち、横方向に何度も振ってください。<br>
+    1往復目は周期と加速度の計測、2振り目以降で表示します。行きも帰りも表示し、帰りは列を逆順に光らせます。<br>
+    スリット幅 1 は本物のPOVスティックと同じ1列表示。60Hz画面では1振りの表示回数が少ないため、増やすと読みやすくなります。<br>
+    センサーはHTTPSのページでのみ動きます。
+  </p>
+</main>
+
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <button id="close" aria-label="終了">✕</button>
+  <div id="status"></div>
+</div>
+
+<script>
+"use strict";
+const ROWS = 16;                 // DotGothic16 は 16px フォント
+const U0 = 0.2, U1 = 0.8;        // 1ストロークのうち表示に使う区間（中央部は速度が一定に近い）
+const P0 = (1 - Math.cos(Math.PI * U0)) / 2, P1 = (1 - Math.cos(Math.PI * U1)) / 2;
+const MIN_THR = 2.0;             // m/s² これ未満は振りとみなさない
+
+const $ = id => document.getElementById(id);
+const setup = $("setup"), stage = $("stage"), cv = $("cv"), ctx = cv.getContext("2d");
+const textEl = $("text"), slitEl = $("slit"), flipEl = $("flip"), statusEl = $("status");
+
+// ---------- 文字 → ドットビットマップ ----------
+let bits = [], N = 0;            // bits[col][row]
+
+async function buildBitmap(str) {
+  const font = '16px "DotGothic16"';
+  try { await document.fonts.load(font, str || "あ"); } catch (_) {}
+  const meas = document.createElement("canvas").getContext("2d");
+  meas.font = font;
+  const w = Math.max(1, Math.ceil(meas.measureText(str).width));
+  const PAD = 2;
+  const c = document.createElement("canvas");
+  c.width = w + PAD * 2; c.height = ROWS;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.font = font; g.fillStyle = "#fff"; g.textBaseline = "alphabetic";
+  g.fillText(str, PAD, 13);
+  const d = g.getImageData(0, 0, c.width, ROWS).data;
+  const out = [];
+  for (let x = 0; x < c.width; x++) {
+    const col = new Array(ROWS);
+    for (let y = 0; y < ROWS; y++) col[y] = d[(y * c.width + x) * 4 + 3] > 110;
+    out.push(col);
+  }
+  return out;
+}
+
+const pv = $("preview"), pg = pv.getContext("2d");
+async function refreshPreview() {
+  bits = await buildBitmap(textEl.value.trim());
+  N = bits.length;
+  const s = 5;
+  pv.width = N * s; pv.height = ROWS * s;
+  pg.fillStyle = "#050505"; pg.fillRect(0, 0, pv.width, pv.height);
+  pg.fillStyle = "#7df";
+  for (let x = 0; x < N; x++) for (let y = 0; y < ROWS; y++)
+    if (bits[x][y]) pg.fillRect(x * s, y * s, s - 1, s - 1);
+}
+textEl.addEventListener("input", refreshPreview);
+slitEl.addEventListener("input", () => { $("slitVal").textContent = slitEl.value; });
+document.fonts.ready.then(refreshPreview);
+refreshPreview();
+
+// ---------- 振りの検出 ----------
+// 加速度のローブ（同符号の山）のピーク = 折り返し地点。+ピーク → その後 +方向へ進む。
+let state = "idle";              // idle | measure | run
+let af = 0, env = 0, lastT = 0, lobe = { sign: 0, max: 0, t: 0 }, lastFired = 0;
+let peaks = [], model = null, lastPeakT = 0, calibratedAt = 0;
+
+function resetMeasure() {
+  state = "measure"; peaks = []; model = null; lobe.sign = 0; lastFired = 0; env = 0;
+  statusEl.textContent = "振ってください（1往復で計測します）";
+}
+
+function onAccel(t, a) {
+  if (state === "idle") return;
+  const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0.016;
+  lastT = t;
+  af += 0.5 * (a - af);
+  const m = Math.abs(af), s = Math.sign(af);
+  env = Math.max(m, env * Math.exp(-dt / 1.5));
+  const thr = Math.max(MIN_THR, env * 0.5);
+
+  if (lobe.sign === 0) {
+    if (m > thr && s !== lastFired) lobe = { sign: s, max: m, t };
+  } else {
+    if (s === lobe.sign && m > lobe.max) { lobe.max = m; lobe.t = t; }
+    if (s !== lobe.sign || m < lobe.max * 0.6) {
+      firePeak(lobe.t, lobe.sign, lobe.max);
+      lastFired = lobe.sign;
+      lobe.sign = 0;
+    }
+  }
+}
+
+function firePeak(t, sign, amp) {
+  if (state === "measure") {
+    const prev = peaks[peaks.length - 1];
+    if (prev && (prev.sign === sign || t - prev.t < 80)) peaks = [];
+    peaks.push({ t, sign, amp });
+    statusEl.textContent = `計測中… ${Math.min(peaks.length, 3)}/3`;
+    if (peaks.length === 3) {
+      const Th = (peaks[2].t - peaks[0].t) / 2;
+      if (Th < 80 || Th > 1500) { peaks.shift(); return; }
+      const amp = (peaks[0].amp + peaks[1].amp + peaks[2].amp) / 3;
+      model = { tRef: peaks[2].t, dirRef: peaks[2].sign, Th, amp, prevT: peaks[2].t };
+      lastPeakT = t; calibratedAt = performance.now(); state = "run";
+    }
+    return;
+  }
+  if (state !== "run") return;
+  const k = Math.round((t - model.tRef) / model.Th);
+  const expect = model.dirRef * (k % 2 === 0 ? 1 : -1);
+  if (k < 0 || sign !== expect) {                    // 位相がずれたら合わせ直す
+    model.tRef = t; model.dirRef = sign;
+  } else {
+    const err = t - (model.tRef + k * model.Th);
+    model.tRef += k * model.Th + 0.7 * err;
+    model.dirRef = expect;
+    if (k === 1) model.Th = 0.7 * model.Th + 0.3 * (t - model.prevT);
+  }
+  model.amp = 0.8 * model.amp + 0.2 * amp;
+  model.prevT = t; lastPeakT = t;
+}
+
+// ---------- センサー入力 ----------
+let gx = null, gotMotion = false;
+function onMotion(e) {
+  const t = performance.now();
+  let ax;
+  if (e.acceleration && e.acceleration.x != null) ax = e.acceleration.x;
+  else {
+    const g = e.accelerationIncludingGravity;
+    if (!g || g.x == null) return;
+    gx = gx == null ? g.x : gx + 0.02 * (g.x - gx);
+    ax = g.x - gx;
+  }
+  gotMotion = true;
+  onAccel(t, ax);
+}
+
+// PC用デモ：周期0.6秒の往復を合成
+let simTimer = null;
+function startSim() {
+  const t0 = performance.now(), w = 2 * Math.PI / 600;
+  simTimer = setInterval(() => {
+    const t = performance.now();
+    onAccel(t, 12 * Math.cos(w * (t - t0)) + (Math.random() - 0.5) * 1.5);
+  }, 16);
+}
+
+// ---------- 描画 ----------
+let raf = 0, wakeLock = null;
+
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(innerWidth * dpr); cv.height = Math.round(innerHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function draw(now) {
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  if (state !== "run") return;
+  if (now - lastPeakT > model.Th * 3.2) { resetMeasure(); return; }   // 振るのをやめたら再計測
+  if (now - calibratedAt > 4000 && statusEl.textContent) statusEl.textContent = "";
+
+  const x = (now - model.tRef) / model.Th;
+  const n = Math.floor(x), u = x - n;
+  if (u < U0 || u > U1) return;
+
+  let dir = model.dirRef * (((n % 2) + 2) % 2 === 0 ? 1 : -1);
+  if (flipEl.checked) dir = -dir;
+  const p = (1 - Math.cos(Math.PI * u)) / 2;
+  let c = Math.floor((p - P0) / (P1 - P0) * N);
+  c = Math.max(0, Math.min(N - 1, c));
+  if (dir < 0) c = N - 1 - c;                                        // 帰りは逆順
+
+  const k = +slitEl.value, rowH = innerHeight / ROWS;
+  const colW = k === 1 ? Math.max(8, innerWidth * 0.04) : Math.min(rowH, innerWidth * 0.94 / k);
+  const x0 = innerWidth / 2 - colW * k / 2, first = c - Math.floor(k / 2);
+  ctx.fillStyle = "#9ef";
+  for (let j = 0; j < k; j++) {
+    const col = bits[first + j];
+    if (!col) continue;
+    for (let r = 0; r < ROWS; r++)
+      if (col[r]) ctx.fillRect(x0 + j * colW, r * rowH, colW - (k === 1 ? 0 : 1), rowH - 2);
+  }
+}
+
+function loop(now) { draw(now); raf = requestAnimationFrame(loop); }
+
+// ---------- 画面遷移 ----------
+async function begin(demo) {
+  try {
+    if (!demo && typeof DeviceMotionEvent !== "undefined" &&
+        typeof DeviceMotionEvent.requestPermission === "function") {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r !== "granted") { alert("モーションセンサーの許可が必要です"); return; }
+    }
+  } catch (err) { alert("センサーを開始できません: " + err.message); return; }
+
+  await refreshPreview();
+  setup.style.display = "none"; stage.style.display = "block";
+  fit(); gotMotion = false; gx = null; lastT = 0; af = 0;
+  resetMeasure();
+  if (demo) startSim(); else window.addEventListener("devicemotion", onMotion);
+  raf = requestAnimationFrame(loop);
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+  if (!demo) setTimeout(() => {
+    if (state !== "idle" && !gotMotion)
+      statusEl.textContent = "センサーの値が来ません。HTTPSで開いているか確認してください（PCは「PCデモ」）";
+  }, 1500);
+}
+
+function end() {
+  state = "idle"; cancelAnimationFrame(raf);
+  window.removeEventListener("devicemotion", onMotion);
+  clearInterval(simTimer); simTimer = null;
+  try { wakeLock?.release(); } catch (_) {}
+  stage.style.display = "none"; setup.style.display = "block";
+}
+
+$("start").addEventListener("click", () => begin(false));
+$("demo").addEventListener("click", () => begin(true));
+$("close").addEventListener("click", end);
+window.addEventListener("resize", () => { if (state !== "idle") fit(); });
+
+// 動作確認用
+window.__darkmoji = { get state() { return state; }, get model() { return model; }, get bits() { return bits; } };
+</script>
+</body>
+</html>
