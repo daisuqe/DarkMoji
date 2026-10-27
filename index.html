@@ -38,7 +38,9 @@
     text-align:center; font-size:13px; color:#555; pointer-events:none; padding:0 16px; }
   #menu { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
     justify-content:center; gap:14px; background:rgba(0,0,0,.88); }
-  #menu[hidden] { display:none; }
+  #menu[hidden], #allow[hidden] { display:none; }
+  #allow { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:#000; }
+  #allow button { flex:none; width:min(280px, 80vw); }
   #menu p { margin:0 0 8px; font-size:20px; color:var(--fg); }
   #menu button { flex:none; width:min(260px, 70vw); }
 </style>
@@ -82,6 +84,9 @@
 <div id="stage">
   <canvas id="cv"></canvas>
   <div id="status"></div>
+  <div id="allow" hidden>
+    <button class="primary" data-i18n="allow"></button>
+  </div>
   <div id="menu" hidden>
     <p id="menuTitle" data-i18n="paused"></p>
     <button id="resume" class="primary" data-i18n="resume"></button>
@@ -119,6 +124,7 @@ const T = {
           "センサーはHTTPSのページでのみ動きます（周期指定を除く）。",
     defaultText: "こんばんは",
     measure: "振ってください（1往復で計測／長押しで戻る）", measuring: n => `計測中… ${n}/3`,
+    allow: "センサーを許可して開始",
     paused: "停止中", resume: "再開", toText: "文字入力",
     noSensor: "センサーの値が来ません。HTTPSで開いているか確認してください（PCは「PCデモ」）",
     permDenied: "モーションセンサーの許可が必要です", sensorErr: m => "センサーを開始できません: " + m,
@@ -139,6 +145,7 @@ const T = {
           "Motion sensors only work on HTTPS pages (not needed for fixed period).",
     defaultText: "Hello",
     measure: "Shake the phone (one round trip to calibrate / long-press to go back)", measuring: n => `Measuring… ${n}/3`,
+    allow: "Allow sensors and start",
     paused: "Paused", resume: "Resume", toText: "Edit text",
     noSensor: "No sensor data. Check that the page is opened over HTTPS (use \"PC demo\" on a computer).",
     permDenied: "Motion sensor permission is required", sensorErr: m => "Cannot start the sensor: " + m,
@@ -340,19 +347,35 @@ function draw(now) {
 function loop(now) { draw(now); raf = requestAnimationFrame(loop); }
 
 // ---------- 画面遷移 ----------
+// iPhoneは、このページで一度でも文字を編集すると、振ったときに「入力の取り消し」が出る。
+// 編集履歴はページ単位なので、スタート時に設定を保存してページを読み込み直し、
+// 一度も編集していない新しいページで動かす（文字入力に戻るときも同様）。
+const SKEY = "darkmoji.settings";
+function saveSettings(run, demo) {
+  try {
+    sessionStorage.setItem(SKEY, JSON.stringify({ text: textEl.value, colw: colwEl.value, hpct: hpctEl.value,
+      flip: flipEl.checked, mode: $("mode").value, period: $("period").value, run, demo }));
+    return true;
+  } catch (_) { return false; }
+}
+function loadSettings() {
+  try { return JSON.parse(sessionStorage.getItem(SKEY)); } catch (_) { return null; }
+}
+
 async function begin(demo) {
+  if (saveSettings(true, demo)) { location.reload(); return; }
+  await startRun(demo);                                              // 保存できない環境では読み込み直さずに動かす
+}
+
+async function acquireWake() {
+  if (wakeLock) return;
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+}
+
+async function startRun(demo) {
   const fixed = $("mode").value === "fixed";
   if (fixed) demo = false;
-  try {
-    if (!fixed && !demo && typeof DeviceMotionEvent !== "undefined" &&
-        typeof DeviceMotionEvent.requestPermission === "function") {
-      const r = await DeviceMotionEvent.requestPermission();
-      if (r !== "granted") { alert(T.permDenied); return; }
-    }
-  } catch (err) { alert(T.sensorErr(err.message)); return; }
-
   await refreshPreview();
-  // iPhoneは入力欄に編集履歴があると、振ったときに「取り消す」が出る。履歴を消して入力欄を無効にする
   textEl.blur(); textEl.value = textEl.value; textEl.disabled = true;
   setup.style.display = "none"; stage.style.display = "block";
   fit(); gotMotion = false; gx = null; lastT = 0; af = 0;
@@ -361,24 +384,40 @@ async function begin(demo) {
     fix = { tRef: performance.now(), P: P * 1000 };
     state = "fixed"; calibratedAt = performance.now(); statusEl.textContent = T.fixedHint(P);
     raf = requestAnimationFrame(loop);
-    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+    acquireWake();
     return;
   }
   resetMeasure();
   if (demo) startSim(); else window.addEventListener("devicemotion", onMotion);
   raf = requestAnimationFrame(loop);
-  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
-  if (!demo) setTimeout(() => {
-    if (state !== "idle" && !gotMotion)
-      statusEl.textContent = T.noSensor;
-  }, 1500);
+  acquireWake();
+  if (demo) return;
+  // iPhoneはセンサーの許可にタップが必要。許可が残っていればそのまま動く
+  const needPermission = typeof DeviceMotionEvent !== "undefined" &&
+                         typeof DeviceMotionEvent.requestPermission === "function";
+  setTimeout(() => {
+    if (state === "idle" || gotMotion) return;
+    if (needPermission) $("allow").hidden = false;
+    else statusEl.textContent = T.noSensor;
+  }, needPermission ? 500 : 1500);
+}
+
+async function allowSensors() {
+  try {
+    const r = await DeviceMotionEvent.requestPermission();
+    if (r !== "granted") { alert(T.permDenied); return; }
+    $("allow").hidden = true;
+    setTimeout(() => { if (state !== "idle" && !gotMotion) statusEl.textContent = T.noSensor; }, 1500);
+  } catch (err) { alert(T.sensorErr(err.message)); }
 }
 
 function end() {
-  state = "idle"; $("menu").hidden = true; cancelAnimationFrame(raf);
+  if (saveSettings(false, false)) { location.reload(); return; }
+  state = "idle"; $("menu").hidden = true; $("allow").hidden = true; cancelAnimationFrame(raf);
   window.removeEventListener("devicemotion", onMotion);
   clearInterval(simTimer); simTimer = null;
   try { wakeLock?.release(); } catch (_) {}
+  wakeLock = null;
   textEl.disabled = false;
   stage.style.display = "none"; setup.style.display = "block";
 }
@@ -386,12 +425,13 @@ function end() {
 $("start").addEventListener("click", () => begin(false));
 $("demo").addEventListener("click", () => begin(true));
 $("resume").addEventListener("click", resume);
+$("allow").addEventListener("click", allowSensors);
 $("toText").addEventListener("click", end);
 // 長押し（0.8秒）で文字入力に戻る
 let holdTimer = 0;
 const cancelHold = () => { clearTimeout(holdTimer); holdTimer = 0; };
 let downAt = 0;
-stage.addEventListener("pointerdown", () => { downAt = performance.now(); cancelHold(); holdTimer = setTimeout(() => { holdTimer = 0; end(); }, 800); });
+stage.addEventListener("pointerdown", () => { acquireWake(); downAt = performance.now(); cancelHold(); holdTimer = setTimeout(() => { holdTimer = 0; end(); }, 800); });
 ["pointerup", "pointercancel", "pointerleave"].forEach(ev => stage.addEventListener(ev, cancelHold));
 stage.addEventListener("pointerup", e => {                          // 周期指定：短いタップで行きの開始に位相を合わせる
   if (state === "fixed" && e.target === cv && performance.now() - downAt < 300) fix.tRef = performance.now();
@@ -399,6 +439,20 @@ stage.addEventListener("pointerup", e => {                          // 周期指
 $("mode").addEventListener("change", () => { $("periodRow").hidden = $("mode").value !== "fixed"; });
 stage.addEventListener("contextmenu", e => e.preventDefault());
 window.addEventListener("resize", () => { if (state !== "idle") fit(); });
+
+// ---------- 読み込み時：前回の設定を復元し、実行指定があればそのまま始める ----------
+(() => {
+  const sv = loadSettings();
+  if (!sv) return;
+  textEl.value = sv.text; colwEl.value = sv.colw; hpctEl.value = sv.hpct; flipEl.checked = !!sv.flip;
+  $("mode").value = sv.mode; $("period").value = sv.period;
+  $("colwVal").textContent = sv.colw; $("hpctVal").textContent = sv.hpct;
+  $("periodRow").hidden = sv.mode !== "fixed";
+  if (sv.run) {
+    saveSettings(false, false);                                      // 次にリロードされたら設定画面に戻る
+    startRun(sv.demo);
+  }
+})();
 
 // 動作確認用
 window.__darkmoji = { get state() { return state; }, get model() { return model; }, get bits() { return bits; } };
