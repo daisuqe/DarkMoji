@@ -43,11 +43,14 @@
   <p class="sub">スマホを振って、暗闇に文字を浮かべる</p>
 
   <label for="text">表示する文字（20文字まで）</label>
-  <input id="text" type="text" maxlength="20" value="こんばんは！" autocomplete="off">
+  <input id="text" type="text" maxlength="20" value="こんばんは" autocomplete="off">
   <canvas id="preview" aria-label="ドット表示のプレビュー"></canvas>
 
   <label for="colw"><span class="row"><span>光らせる幅（px）</span><span id="colwVal">24</span></span></label>
   <input id="colw" type="range" min="4" max="120" value="24">
+
+  <label for="hpct"><span class="row"><span>全体の高さ（画面の%）</span><span id="hpctVal">100</span></span></label>
+  <input id="hpct" type="range" min="20" max="100" value="100">
 
   <label class="check"><input id="flip" type="checkbox"> 左右を反転する（文字が逆に見えるとき）</label>
 
@@ -79,7 +82,7 @@ const MIN_THR = 2.0;             // m/s² これ未満は振りとみなさな�
 
 const $ = id => document.getElementById(id);
 const setup = $("setup"), stage = $("stage"), cv = $("cv"), ctx = cv.getContext("2d");
-const textEl = $("text"), colwEl = $("colw"), flipEl = $("flip"), statusEl = $("status");
+const textEl = $("text"), colwEl = $("colw"), hpctEl = $("hpct"), flipEl = $("flip"), statusEl = $("status");
 
 // ---------- 文字 → ドットビットマップ ----------
 let bits = [], N = 0;            // bits[col][row]
@@ -123,6 +126,7 @@ async function refreshPreview() {
 }
 textEl.addEventListener("input", refreshPreview);
 colwEl.addEventListener("input", () => { $("colwVal").textContent = colwEl.value; });
+hpctEl.addEventListener("input", () => { $("hpctVal").textContent = hpctEl.value; });
 document.fonts.ready.then(refreshPreview);
 refreshPreview();
 
@@ -240,11 +244,11 @@ function draw(now) {
   c = Math.max(0, Math.min(N - 1, c));
   if (dir < 0) c = N - 1 - c;                                        // 帰りは逆順
 
-  const rowH = innerHeight / ROWS, colW = +colwEl.value;
+  const rowH = innerHeight * hpctEl.value / 100 / ROWS, colW = +colwEl.value, y0 = (innerHeight - rowH * ROWS) / 2;
   ctx.fillStyle = "#fff";
   const col = bits[c], x0 = innerWidth / 2 - colW / 2;
   for (let r = 0; r < ROWS; r++)
-    if (col[r]) ctx.fillRect(x0, r * rowH, colW, rowH - 2);
+    if (col[r]) ctx.fillRect(x0, y0 + r * rowH, colW, rowH - 2);
 }
 
 function loop(now) { draw(now); raf = requestAnimationFrame(loop); }
