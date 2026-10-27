@@ -4,10 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>DarkMoji</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
 <style>
+  @font-face { font-family:"Misaki"; src:url("fonts/misaki_gothic.woff2") format("woff2"); }
   :root { --bg:#000; --fg:#e8e8e8; --dim:#8a8a8a; --accent:#5cf; --line:#262626; }
   * { box-sizing: border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
@@ -44,12 +42,12 @@
   <h1>DarkMoji</h1>
   <p class="sub">スマホを振って、暗闇に文字を浮かべる</p>
 
-  <label for="text">表示する文字（8文字まで）</label>
-  <input id="text" type="text" maxlength="8" value="ダークモジ" autocomplete="off">
+  <label for="text">表示する文字（20文字まで）</label>
+  <input id="text" type="text" maxlength="20" value="こんばんは！" autocomplete="off">
   <canvas id="preview" aria-label="ドット表示のプレビュー"></canvas>
 
-  <label for="slit"><span class="row"><span>スリット幅（列数）</span><span id="slitVal">1</span></span></label>
-  <input id="slit" type="range" min="1" max="24" value="1">
+  <label for="colw"><span class="row"><span>光らせる幅（px）</span><span id="colwVal">24</span></span></label>
+  <input id="colw" type="range" min="4" max="120" value="24">
 
   <label class="check"><input id="flip" type="checkbox"> 左右を反転する（文字が逆に見えるとき）</label>
 
@@ -61,7 +59,7 @@
   <p class="help">
     画面を縦向きに持ち、横方向に何度も振ってください。<br>
     1往復目は周期と加速度の計測、2振り目以降で表示します。行きも帰りも表示し、帰りは列を逆順に光らせます。<br>
-    スリット幅 1 は本物のPOVスティックと同じ1列表示。60Hz画面では1振りの表示回数が少ないため、増やすと読みやすくなります。<br>
+    光らせる幅を広げると明るくなりますが、文字はにじみます。<br>
     センサーはHTTPSのページでのみ動きます。
   </p>
 </main>
@@ -74,35 +72,39 @@
 
 <script>
 "use strict";
-const ROWS = 16;                 // DotGothic16 は 16px フォント
+const ROWS = 8;                  // 美咲フォントは 8x8
 const U0 = 0.2, U1 = 0.8;        // 1ストロークのうち表示に使う区間（中央部は速度が一定に近い）
 const P0 = (1 - Math.cos(Math.PI * U0)) / 2, P1 = (1 - Math.cos(Math.PI * U1)) / 2;
 const MIN_THR = 2.0;             // m/s² これ未満は振りとみなさない
 
 const $ = id => document.getElementById(id);
 const setup = $("setup"), stage = $("stage"), cv = $("cv"), ctx = cv.getContext("2d");
-const textEl = $("text"), slitEl = $("slit"), flipEl = $("flip"), statusEl = $("status");
+const textEl = $("text"), colwEl = $("colw"), flipEl = $("flip"), statusEl = $("status");
 
 // ---------- 文字 → ドットビットマップ ----------
 let bits = [], N = 0;            // bits[col][row]
 
 async function buildBitmap(str) {
-  const font = '16px "DotGothic16"';
+  const S = 8;                   // 8倍で描いて各ドットの中心をサンプルする（半端な座標でも欠けない）
+  const font = `${ROWS * S}px "Misaki"`;
   try { await document.fonts.load(font, str || "あ"); } catch (_) {}
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = font;
-  const w = Math.max(1, Math.ceil(meas.measureText(str).width));
+  const w = Math.max(1, Math.round(meas.measureText(str).width / S));
   const PAD = 2;
   const c = document.createElement("canvas");
-  c.width = w + PAD * 2; c.height = ROWS;
+  c.width = (w + PAD * 2) * S; c.height = ROWS * S;
   const g = c.getContext("2d", { willReadFrequently: true });
   g.font = font; g.fillStyle = "#fff"; g.textBaseline = "alphabetic";
-  g.fillText(str, PAD, 13);
-  const d = g.getImageData(0, 0, c.width, ROWS).data;
+  g.fillText(str, PAD * S, (ROWS - 1) * S);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
   const out = [];
-  for (let x = 0; x < c.width; x++) {
+  for (let x = 0; x < w + PAD * 2; x++) {
     const col = new Array(ROWS);
-    for (let y = 0; y < ROWS; y++) col[y] = d[(y * c.width + x) * 4 + 3] > 110;
+    for (let y = 0; y < ROWS; y++) {
+      const px = x * S + S / 2, py = y * S + S / 2;
+      col[y] = d[(py * c.width + px) * 4 + 3] > 128;
+    }
     out.push(col);
   }
   return out;
@@ -112,7 +114,7 @@ const pv = $("preview"), pg = pv.getContext("2d");
 async function refreshPreview() {
   bits = await buildBitmap(textEl.value.trim());
   N = bits.length;
-  const s = 5;
+  const s = 10;
   pv.width = N * s; pv.height = ROWS * s;
   pg.fillStyle = "#050505"; pg.fillRect(0, 0, pv.width, pv.height);
   pg.fillStyle = "#7df";
@@ -120,7 +122,7 @@ async function refreshPreview() {
     if (bits[x][y]) pg.fillRect(x * s, y * s, s - 1, s - 1);
 }
 textEl.addEventListener("input", refreshPreview);
-slitEl.addEventListener("input", () => { $("slitVal").textContent = slitEl.value; });
+colwEl.addEventListener("input", () => { $("colwVal").textContent = colwEl.value; });
 document.fonts.ready.then(refreshPreview);
 refreshPreview();
 
@@ -238,16 +240,11 @@ function draw(now) {
   c = Math.max(0, Math.min(N - 1, c));
   if (dir < 0) c = N - 1 - c;                                        // 帰りは逆順
 
-  const k = +slitEl.value, rowH = innerHeight / ROWS;
-  const colW = k === 1 ? Math.max(8, innerWidth * 0.04) : Math.min(rowH, innerWidth * 0.94 / k);
-  const x0 = innerWidth / 2 - colW * k / 2, first = c - Math.floor(k / 2);
-  ctx.fillStyle = "#9ef";
-  for (let j = 0; j < k; j++) {
-    const col = bits[first + j];
-    if (!col) continue;
-    for (let r = 0; r < ROWS; r++)
-      if (col[r]) ctx.fillRect(x0 + j * colW, r * rowH, colW - (k === 1 ? 0 : 1), rowH - 2);
-  }
+  const rowH = innerHeight / ROWS, colW = +colwEl.value;
+  ctx.fillStyle = "#fff";
+  const col = bits[c], x0 = innerWidth / 2 - colW / 2;
+  for (let r = 0; r < ROWS; r++)
+    if (col[r]) ctx.fillRect(x0, r * rowH, colW, rowH - 2);
 }
 
 function loop(now) { draw(now); raf = requestAnimationFrame(loop); }
