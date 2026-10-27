@@ -92,8 +92,7 @@
 <script>
 "use strict";
 const ROWS = 8;                  // 美咲フォントは 8x8
-const U0 = 0.2, U1 = 0.8;        // 1ストロークのうち表示に使う区間（中央部は速度が一定に近い）
-const P0 = (1 - Math.cos(Math.PI * U0)) / 2, P1 = (1 - Math.cos(Math.PI * U1)) / 2;
+const U0 = 0.2, U1 = 0.8;        // 片道のうち、前20%は非表示・中央60%で全文字・後20%は非表示
 const IDLE_MS = 3000;            // 検出できる振りがこれだけ途切れたら停止中にする
 const MIN_THR = 2.0;             // m/s² これ未満は振りとみなさない
 
@@ -304,8 +303,7 @@ function fit() {
 // u: 1ストローク内の進み(0..1)。表示区間外は -1、それ以外は左端から数えた列番号
 function columnAt(u, dir) {
   if (u < U0 || u > U1) return -1;
-  const p = (1 - Math.cos(Math.PI * u)) / 2;
-  let c = Math.floor((p - P0) / (P1 - P0) * N);
+  let c = Math.floor((u - U0) / (U1 - U0) * N);                      // 時間に比例して全列を並べる
   c = Math.max(0, Math.min(N - 1, c));
   return dir < 0 ? N - 1 - c : c;                                    // 帰りは逆順
 }
@@ -354,6 +352,8 @@ async function begin(demo) {
   } catch (err) { alert(T.sensorErr(err.message)); return; }
 
   await refreshPreview();
+  // iPhoneは入力欄に編集履歴があると、振ったときに「取り消す」が出る。履歴を消して入力欄を無効にする
+  textEl.blur(); textEl.value = textEl.value; textEl.disabled = true;
   setup.style.display = "none"; stage.style.display = "block";
   fit(); gotMotion = false; gx = null; lastT = 0; af = 0;
   if (fixed) {
@@ -379,6 +379,7 @@ function end() {
   window.removeEventListener("devicemotion", onMotion);
   clearInterval(simTimer); simTimer = null;
   try { wakeLock?.release(); } catch (_) {}
+  textEl.disabled = false;
   stage.style.display = "none"; setup.style.display = "block";
 }
 
